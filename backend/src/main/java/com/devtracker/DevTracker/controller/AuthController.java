@@ -1,0 +1,118 @@
+package com.devtracker.DevTracker.controller;
+
+import com.devtracker.DevTracker.config.JwtUtil;
+import com.devtracker.DevTracker.dto.auth.LoginRequestDTO;
+import com.devtracker.DevTracker.dto.auth.SignUpRequestDTO;
+import com.devtracker.DevTracker.dto.user.UserDTO;
+import com.devtracker.DevTracker.model.User;
+import com.devtracker.DevTracker.services.UserService;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.util.Map;
+
+@RestController
+@RequestMapping("/api/auth")
+public class AuthController {
+
+    @Autowired
+    private AuthenticationManager authManager;
+
+    @Autowired
+    private UserService userService;
+
+    @Autowired
+    private JwtUtil jwtUtil;
+
+    @Autowired
+    private PasswordEncoder passwordEncoder;
+
+    @PostMapping("/signup")
+    public ResponseEntity<?> register( @RequestBody SignUpRequestDTO userDTO) {
+
+        try {
+            // Check if email already exists
+            User existingUser = userService.findByEmailId(userDTO.getEmail());
+            if (existingUser != null) {
+                return ResponseEntity
+                        .status(HttpStatus.CONFLICT)
+                        .body(Map.of("message", "Email already in use"));
+            }
+            
+            // Check if UuId already exists
+            try {
+                UserDTO existingUserByUuid = userService.getUserByUUID(userDTO.getUuId());
+                if (existingUserByUuid != null) {
+                    return ResponseEntity
+                            .status(HttpStatus.CONFLICT)
+                            .body(Map.of("message", "User ID already in use"));
+                }
+            } catch (Exception e) {
+                // User with this UUID doesn't exist, which is what we want
+            }
+
+            User user = new User();
+            user.setUserName(userDTO.getUserName());
+            user.setUuId(userDTO.getUuId());
+            user.setEmail(userDTO.getEmail());
+            user.setPassword(passwordEncoder.encode(userDTO.getPassword()));
+            user.setPosition(userDTO.getPosition());
+
+            userService.saveUser(user);
+            return ResponseEntity.ok(Map.of("message", "User registered successfully"));
+        }catch (Exception e){
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("message", "Registration failed: " + e.getMessage()));
+        }
+    }
+
+    @PostMapping("/login")
+    public ResponseEntity<?> login(@RequestBody LoginRequestDTO loginDTO) {
+        try {
+            // First, check if the user exists
+            User user = userService.findByEmailId(loginDTO.getEmail());
+            if (user == null) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body(Map.of("message", "Invalid user"));
+            }
+
+            if (user.getOrganization() == null || user.getOrganization().getOrgId() == null) {
+                // Generate token but indicate user needs to join an organization
+                String token = jwtUtil.generateToken(user);
+                return ResponseEntity.ok(Map.of(
+                        "status", "NO_ORG",
+                        "message", "User must join an organization",
+                        "userId", user.getUserId(),
+                        "token", token
+                ));
+            }
+
+            Authentication auth = authManager.authenticate(
+                    new UsernamePasswordAuthenticationToken(loginDTO.getEmail(), loginDTO.getPassword())
+            );
+
+            if (auth.isAuthenticated()) {
+                String token = jwtUtil.generateToken(user);
+                return ResponseEntity.ok(Map.of(
+                        "status", "SUCCESS",
+                        "token", token
+                ));
+            } else {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body(Map.of("message", "Authentication failed"));
+            }
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(Map.of("message", "Invalid credentials", "error", e.getMessage()));
+        }
+    }
+
+}
